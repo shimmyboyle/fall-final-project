@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Gradient Particles</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        canvas { position: fixed; top: 0; left: 0; }
+    </style>
+</head>
+<body>
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://cdnjs.cloudflare.com/ajax/libs/three.js/0.159.0/three.module.js"
+            }
+        }
+    </script>
+    <script type="module">
+        import * as THREE from 'three';
+
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ 
+            antialias: true,
+            alpha: true 
+        });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        camera.position.z = 2;
+
+        // Create ultra-thin grid background
+        function createGridTexture() {
+            const canvas = document.createElement('canvas');
+            canvas.width = 2048;
+            canvas.height = 2048;
+            const ctx = canvas.getContext('2d');
+
+            ctx.fillStyle = '#000002';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+            ctx.strokeStyle = '#fc0fc0';
+            ctx.lineWidth = 0.2; // Ultra thin lines
+            const gridSize = 40;
+            const gridAlpha = 0.08; // Very subtle base grid
+
+            ctx.globalAlpha = gridAlpha;
+            // Start grid from negative half-width/height to avoid center axis
+            for (let x = -canvas.width/2; x < canvas.width*1.5; x += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(x, 0);
+                ctx.lineTo(x, canvas.height);
+                ctx.stroke();
+             }
+
+             for (let y = -canvas.height/2; y < canvas.height*1.5; y += gridSize) {
+                ctx.beginPath();
+                ctx.moveTo(0, y);
+                ctx.lineTo(canvas.width, y);
+                ctx.stroke();
+    }
+
+            // Slightly more visible major grid lines
+            // ctx.globalAlpha = gridAlpha * 2;
+            // ctx.lineWidth = 0.1;
+            // const majorGridSize = gridSize * 5;
+
+            // for (let x = 0; x < canvas.width; x += majorGridSize) {
+            //     ctx.beginPath();
+            //     ctx.moveTo(x, 0);
+            //     ctx.lineTo(x, canvas.height);
+            //     ctx.stroke();
+            // }
+
+            // for (let y = 0; y < canvas.height; y += majorGridSize) {
+            //     ctx.beginPath();
+            //     ctx.moveTo(0, y);
+            //     ctx.lineTo(canvas.width, y);
+            //     ctx.stroke();
+            // }
+
+            return new THREE.CanvasTexture(canvas);
+        }
+
+        const gridTexture = createGridTexture();
+        const backgroundMesh = new THREE.Mesh(
+            new THREE.PlaneGeometry(20, 20),
+            new THREE.MeshBasicMaterial({
+                map: gridTexture,
+                side: THREE.DoubleSide,
+                transparent: true,
+                opacity: 1
+            })
+        );
+        backgroundMesh.position.z = -1;
+        scene.add(backgroundMesh);
+
+        function createParticleMaterial() {
+            return new THREE.ShaderMaterial({
+                uniforms: {
+                    colorTop: { value: new THREE.Color('#4A00E0') },
+                    colorBottom: { value: new THREE.Color('#FF69B4') },
+                    opacity: { value: 1.0 }
+                },
+                vertexShader: `
+                    varying vec3 vPosition;
+                    void main() {
+                        vPosition = position;
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+                    }
+                `,
+                fragmentShader: `
+                    uniform vec3 colorTop;
+                    uniform vec3 colorBottom;
+                    uniform float opacity;
+                    varying vec3 vPosition;
+                    void main() {
+                        float y = (vPosition.y + 0.0001) * 0.5;
+                        vec3 color = mix(colorBottom, colorTop, y);
+                        gl_FragColor = vec4(color, opacity);
+                    }
+                `,
+                transparent: true,
+                blending: THREE.AdditiveBlending
+            });
+        }
+
+        function createGlowMaterial() {
+            return new THREE.ShaderMaterial({
+                uniforms: {
+                    colorTop: { value: new THREE.Color('#4A00E0') },
+                    colorBottom: { value: new THREE.Color('#FF69B4') },
+                    intensity: { value: 1.0 }
+                },
+                vertexShader: `
+                    varying vec3 vPosition;
+                    varying vec3 vNormal;
+                    varying vec3 vPositionNormal;
+                    void main() {
+                        vPosition = position;
+                        vNormal = normalize(normalMatrix * normal);
+                        vPositionNormal = normalize((modelViewMatrix * vec4(position, 1.0)).xyz);
+                        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 0.01);
+                    }
+                `,
+                fragmentShader: `
+                    uniform vec3 colorTop;
+                    uniform vec3 colorBottom;
+                    uniform float intensity;
+                    varying vec3 vPosition;
+                    varying vec3 vNormal;
+                    varying vec3 vPositionNormal;
+                    void main() {
+                        float y = (vPosition.y + 1.0) * 0.5;
+                        vec3 baseColor = mix(colorBottom, colorTop, y);
+                        float rim = 1.0 - abs(dot(vNormal, vPositionNormal));
+                        gl_FragColor = vec4(baseColor, rim * intensity * .10);
+                    }
+                `,
+                transparent: true,
+                blending: THREE.AdditiveBlending,
+                side: THREE.BackSide
+            });
+        }
+
+        const particles = [];
+        const particleCount = 8000;
+        const particleGeometries = [
+            new THREE.SphereGeometry(0.01, 32, 32),
+            new THREE.SphereGeometry(0.02, 32, 32),
+            new THREE.SphereGeometry(0.025, 32, 32),
+            new THREE.SphereGeometry(0.03, 32, 32),
+            new THREE.SphereGeometry(0.035, 32, 32)
+        ];
+
+        class Particle {
+            constructor() {
+                const geometry = particleGeometries[Math.floor(Math.random() * particleGeometries.length)];
+                
+                this.mesh = new THREE.Mesh(geometry, createParticleMaterial());
+                
+                const glowGeometry = geometry.clone();
+                glowGeometry.scale(25.5, 25.5, 25.5);
+                this.glowMesh = new THREE.Mesh(glowGeometry, createGlowMaterial());
+                
+                this.mesh.visible = false;
+                this.glowMesh.visible = false;
+                this.velocity = new THREE.Vector3();
+                this.age = 0;
+                this.lifespan = 0;
+                this.baseScale = 0.1 + Math.random() * 0.4;
+                this.mesh.scale.set(this.baseScale, this.baseScale, this.baseScale);
+                this.glowMesh.scale.set(this.baseScale * 1.5, this.baseScale * 1.5, this.baseScale * 1.5);
+                
+                scene.add(this.mesh);
+                scene.add(this.glowMesh);
+            }
+
+            reset(position) {
+                this.mesh.position.copy(position);
+                this.glowMesh.position.copy(position);
+                this.age = 0;
+                this.lifespan = 1.0 + Math.random() * 0.9;
+                this.mesh.visible = true;
+                this.glowMesh.visible = true;
+                
+                this.baseScale = 0.001 + Math.random() * 0.1;
+                this.mesh.scale.set(this.baseScale, this.baseScale, this.baseScale);
+                this.glowMesh.scale.set(this.baseScale * 1.5, this.baseScale * 1.5, this.baseScale * 1.5);
+                
+                const speedFactor = 1.1 - (this.baseScale - 0.8) * 0.2;
+                this.velocity.copy(mouseWorld)
+                    .sub(this.mesh.position)
+                    .normalize()
+                    .multiplyScalar(0.02 * speedFactor + Math.random() * 0.015);
+            }
+
+            update(deltaTime) {
+                if (!this.mesh.visible) return;
+
+                const directionToCursor = new THREE.Vector3()
+                    .copy(mouseWorld)
+                    .sub(this.mesh.position)
+                    .normalize();
+
+                const steeringFactor = 0.08 * (1.1 - (this.baseScale - 0.8) * 0.2);
+                this.velocity.lerp(directionToCursor.multiplyScalar(0.05), steeringFactor);
+                
+                this.mesh.position.add(this.velocity);
+                this.glowMesh.position.copy(this.mesh.position);
+
+                this.age += deltaTime;
+                const normalizedAge = this.age / this.lifespan;
+                
+                this.mesh.material.uniforms.opacity.value = Math.max(0, 0.5 * (1 - normalizedAge));
+                this.glowMesh.material.uniforms.intensity.value = Math.max(0, 1.0 * (1 - normalizedAge));
+
+                const pulseFactor = 1 + Math.sin(this.age * 4) * 0.05;
+                const currentScale = this.baseScale * pulseFactor;
+                this.mesh.scale.set(currentScale, currentScale, currentScale);
+                this.glowMesh.scale.set(currentScale * 1.5, currentScale * 1.5, currentScale * 1.5);
+
+                if (normalizedAge >= 1 || (!isMouseMoving && this.mesh.material.uniforms.opacity.value < 0.1)) {
+                    this.mesh.visible = false;
+                    this.glowMesh.visible = false;
+                }
+            }
+        }
+
+        for (let i = 0; i < particleCount; i++) {
+            particles.push(new Particle());
+        }
+
+        const mouse = new THREE.Vector2();
+        const mouseWorld = new THREE.Vector3();
+        const prevMouseWorld = new THREE.Vector3();
+        let isMouseMoving = false;
+        let mouseUpdateTime = 0;
+        let lastSpawnTime = 0;
+        const spawnInterval = 30;
+
+        let targetRotationX = 0;
+        let targetRotationY = 0;
+        let currentRotationX = 0;
+        let currentRotationY = 0;
+
+        function spawnParticle() {
+            const now = Date.now();
+            if (now - lastSpawnTime < spawnInterval) return;
+            
+            const particlesPerSpawn = 15;
+            for (let i = 0; i < particlesPerSpawn; i++) {
+                const particle = particles.find(p => !p.mesh.visible);
+                if (!particle) continue;
+
+                const directionVector = new THREE.Vector3()
+                    .copy(mouseWorld)
+                    .sub(prevMouseWorld)
+                    .normalize();
+
+                const spawnPoint = new THREE.Vector3();
+                spawnPoint.copy(mouseWorld)
+                    .sub(directionVector.multiplyScalar(0.2));
+                
+                spawnPoint.x += (Math.random() - 0.5) * 0.3;
+                spawnPoint.y += (Math.random() - 0.5) * 0.3;
+                
+                particle.reset(spawnPoint);
+            }
+            lastSpawnTime = now;
+        }
+
+        function updateMousePosition(event) {
+            prevMouseWorld.copy(mouseWorld);
+
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            mouseWorld.set(
+                mouse.x * (window.innerWidth / window.innerHeight) * 1.5,
+                mouse.y * 1.5,
+                0
+            );
+
+            targetRotationX = -mouse.y * 0.15;
+            targetRotationY = mouse.x * 0.15;
+
+            isMouseMoving = true;
+            mouseUpdateTime = Date.now();
+        }
+
+        function updateBackgroundRotation() {
+            const rotationLerp = 0.1;
+            currentRotationX += (targetRotationX - currentRotationX) * rotationLerp;
+            currentRotationY += (targetRotationY - currentRotationY) * rotationLerp;
+
+            backgroundMesh.rotation.x = currentRotationX;
+            backgroundMesh.rotation.y = currentRotationY;
+        }
+
+        let lastTime = Date.now();
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const currentTime = Date.now();
+            const deltaTime = (currentTime - lastTime) / 1000;
+            lastTime = currentTime;
+
+            updateBackgroundRotation();
+
+            if (currentTime - mouseUpdateTime > 50) {
+                isMouseMoving = false;
+            }
+
+            if (isMouseMoving) {
+                spawnParticle();
+            }
+
+            particles.forEach(particle => particle.update(deltaTime));
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('mousemove', updateMousePosition);
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
